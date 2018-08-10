@@ -51,7 +51,6 @@ namespace stdpcalcium
     extern const Name S_attr;
     extern const Name sigma;
     extern const Name rho_max;
-    extern const Name t_lastspike;
     extern const Name p_active; 
     extern const Name d_active; 
   }

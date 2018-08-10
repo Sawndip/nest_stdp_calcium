@@ -79,6 +79,8 @@
 
 // C++ includes:
 #include <cmath>
+// Including boost for inverse erfc function
+#include <boost/math/special_functions/erf.hpp>
 
 // Includes from nestkernel:
 #include "common_synapse_properties.h"
@@ -90,17 +92,68 @@
 #include "dictdatum.h"
 #include "dictutils.h"
 
-// Including boost for inverse erfc function
-#include <boost/math/special_functions/erf.hpp>
+// Include stdpcalcium namespace
+#include "stdp_calcium_names.h"
+
 
 namespace stdpcalcium
 {
-  class STDPCalciumConnector : public StaticConnection
+
+  class STDPCalciumCommonProperties : public nest::CommonSynapseProperties
+  {
+  
+      template < typename targetidentifierT >
+      friend class STDPCalciumConnection;
+    
+    public:
+      /**
+       * Default constructor.
+       * Sets all property values to defaults.
+       */
+      STDPCalciumCommonProperties();
+    
+      /**
+       * Get all properties and put them into a dictionary.
+       */
+      void get_status( DictionaryDatum& d ) const;
+    
+      /**
+       * Set properties from the values given in dictionary.
+       */
+      void set_status( const DictionaryDatum& d, nest::ConnectorModel& cm );
+    
+      // data members common to all connections
+      double tau_ca_;
+      double C_pre_;
+      double C_post_;
+      double theta_p_;
+      double theta_d_;
+      double gamma_p_;
+      double gamma_d_;
+      double tau_rho_;
+      double S_attr_;
+      double sigma_;
+      double rho_max_;
+  };
+
+
+
+  template < typename targetidentifierT >
+  class STDPCalciumConnection : public nest::Connection< targetidentifierT >
   {
     public:
-      STDPCalciumConnector () {}
-      STDPCalciumConnector (const STDPCalciumConnector &) {}
-      ~STDPCalciumConnector () {}
+
+      typedef STDPCalciumCommonProperties CommonPropertiesType;
+      typedef nest::Connection< targetidentifierT > ConnectionBase;
+
+      STDPCalciumConnection ();
+      STDPCalciumConnection ( const STDPCalciumConnection& );
+      ~STDPCalciumConnection (){}
+
+      using ConnectionBase::get_delay_steps;
+      using ConnectionBase::get_delay;
+      using ConnectionBase::get_rport;
+      using ConnectionBase::get_target;
 
       /**
        * Get all properties of this connection and put them into a dictionary.
@@ -110,103 +163,136 @@ namespace stdpcalcium
       /**
        * Set properties of this connection from the values given in dictionary.
        */
-      void set_status( const DictionaryDatum& d, ConnectorModel& cm );
+      void set_status( const DictionaryDatum& d, nest::ConnectorModel& cm );
 
       /**
        * Send an event to the receiver of this connection.
        * \param e The event to send
        * \param cp common properties of all synapses (empty).
        */
-      void send (Event& e, thread t, const CommonSynapseProperties& cp);
+  	  void send( nest::Event& e,
+    	nest::thread t,
+    	double t_lastspike,
+    	const STDPCalciumCommonProperties& cp );
+
+      class ConnTestDummyNode : public nest::ConnTestDummyNodeBase
+      {
+      public:
+        // Ensure proper overriding of overloaded virtual functions.
+        // Return values from functions are ignored.
+        using nest::ConnTestDummyNodeBase::handles_test_event;
+        nest::port
+        handles_test_event( nest::SpikeEvent&, nest::rport )
+        {
+          return nest::invalid_port_;
+        }
+      };
+
 
       void
-      set_weight( double w )
+      check_connection( nest::Node& s,
+        nest::Node& t,
+        nest::rport receptor_type,
+        double t_lastspike,
+        const CommonPropertiesType& )
       {
-        weight_ = w;
+        ConnTestDummyNode dummy_target;
+    
+        ConnectionBase::check_connection_( dummy_target, s, t, receptor_type );
+    
+        t.register_stdp_connection( t_lastspike - get_delay() );
       }
+
+     /*
+	  * set_weight is required by nest infrastructure, but is not required here
+	  * the phosphorylation variable will NOT be set to the corresponding value,
+	  * and the calcium history will remain untouched
+	  * In particular, setting weight to zero may not guarantee that the weight directly
+	  * remains at zero since there could be a high local calcium concentration,
+	  * triggering instantaneous plasticity
+      */
+      void set_weight( double w )
+      {
+          weight_ = w;
+      }
+
 
     private:
       double weight_;
       double rho_;
       double ca_;
 
-      const double tau_ca_;
-      const double C_pre_;
-      const double C_post_;
-      const double theta_p_;
-      const double theta_d_;
-      const double gamma_p_;
-      const double gamma_d_;
-      const double tau_rho_;
-      const double S_attr_;
-      const double sigma_;
-      const double rho_max_;
-
-      double t_lastspike_;
+      double t_lastspike;
       bool p_active_;
       bool d_active_;
 
-      double transfer_( double rho );
+      double transfer_( const STDPCalciumCommonProperties cp, double rho );
 
-      double invtransfer_( double w );
+      double invtransfer_( const STDPCalciumCommonProperties cp, double w );
 
-      void calcium_update_prepost_( double dt );
+      void calcium_update_prepost_( const STDPCalciumCommonProperties cp, double dt );
 
-      void calcium_update_postpre_( double dt );
+      void calcium_update_postpre_( const STDPCalciumCommonProperties cp, double dt );
 
-      void update_rho_( double time_pot, double time_dep );
+      void update_rho_( const STDPCalciumCommonProperties cp, double t_close_p, double t_close_d );
   };
 
-  inline double transfer_( double rho )
+  template < typename targetidentifierT >
+  double STDPCalciumConnection< targetidentifierT >::transfer_( const STDPCalciumCommonProperties cp, double rho )
   {
-    return std::erfc((S_attr_ - rho)/sigma_);
+    return erfc((cp.S_attr_ - rho)/cp.sigma_);
   }
 
-  inline double invtransfer_( double w )
+  template < typename targetidentifierT >
+  double STDPCalciumConnection< targetidentifierT >::invtransfer_( const STDPCalciumCommonProperties cp, double w )
   {
-    return std::min(std::max(0, S_attr_ - 2*std::pow(sigma_,2.0)*erfc_inv(w)), rho_max_);
+  	using namespace boost::math;
+    return std::min(std::max(0.0, cp.S_attr_ - 2*std::pow(cp.sigma_,2.0)*erfc_inv(w)), cp.rho_max_);
   }
   
-  inline void calcium_update_prepost_( double dt )
+  template < typename targetidentifierT >
+  void STDPCalciumConnection< targetidentifierT >::calcium_update_prepost_( const STDPCalciumCommonProperties cp, double dt )
   {
-    ca_ = ca_*std::exp(-dt/tau_ca_) + C_post_;
+    ca_ = ca_*std::exp(-dt/cp.tau_ca_) + cp.C_post_;
   }
   
-  inline void calcium_update_postpre_( double dt )
+  template < typename targetidentifierT >
+  void STDPCalciumConnection< targetidentifierT >::calcium_update_postpre_( const STDPCalciumCommonProperties cp, double dt )
   {
-    ca_ = ca_*std::exp(-dt/tau_ca_) + C_pre_;
+    ca_ = ca_*std::exp(-dt/cp.tau_ca_) + cp.C_pre_;
   }
   
-  inline void update_rho_( double time_pot, double time_dep )
+  template < typename targetidentifierT >
+  void STDPCalciumConnection< targetidentifierT >::update_rho_( const STDPCalciumCommonProperties cp, double t_close_p, double t_close_d )
   {
     double t_pure_d = t_close_d - t_close_p;
     assert( t_pure_d >= 0 );
   
-    rho_ = ((rho_ - rho_max_*gamma_p_/(gamma_p_+gamma_d_))*std::exp(-(t_close_p)*(gamma_p_+gamma_d_)/tau_rho_) + rho_max_*gamma_p_/(gamma_p_+gamma_d_));
-    rho_ = rho_.* std::exp(-gamma_d_*(t_pure_d)/tau_rho_);
+    rho_ = ((rho_ - cp.rho_max_*cp.gamma_p_/(cp.gamma_p_+cp.gamma_d_))*std::exp(-(t_close_p)*(cp.gamma_p_+cp.gamma_d_)/cp.tau_rho_) + cp.rho_max_*cp.gamma_p_/(cp.gamma_p_+cp.gamma_d_));
+    rho_ = rho_* std::exp(-cp.gamma_d_*(t_pure_d)/cp.tau_rho_);
   
-    weight_ = transfer_( rho_ );
+    weight_ = transfer_( cp, rho_ );
   }
 
   template < typename targetidentifierT >
-  inline void
-  STDPCalciumConnector< targetidentifierT >::send( Event& e,
-    thread t,
-    const CommonSynapseProperties& )
+  void STDPCalciumConnection< targetidentifierT >::send( nest::Event& e,
+    nest::thread t,
+    double t_lastspike,
+    const STDPCalciumCommonProperties& cp )
   {
     // synapse STDP depressing/facilitation dynamics
     double t_spike = e.get_stamp().get_ms();
   
     // use accessor functions (inherited from Connection< >) to obtain delay and
     // target
-    Node* target = get_target( t );
+    nest::Node* target = get_target( t );
     double dendritic_delay = get_delay();
   
     // get spike history in relevant range (t1, t2] from post-synaptic neuron
-    std::deque< histentry >::iterator start;
-    std::deque< histentry >::iterator finish;
+    std::deque< nest::histentry >::iterator start;
+    std::deque< nest::histentry >::iterator finish;
   
-    // For a new synapse, t_lastspike_ contains the point in time of the last
+    // For a new synapse, t_lastspike contains the point in time of the last
     // spike. So we initially read the
     // history(t_last_spike - dendritic_delay, ..., T_spike-dendritic_delay]
     // which increases the access counter for these entries.
@@ -214,7 +300,7 @@ namespace stdpcalcium
     // history[0, ..., t_last_spike - dendritic_delay] have been
     // incremented by Archiving_Node::register_stdp_connection(). See bug #218 for
     // details.
-    target->get_history( t_lastspike_ - dendritic_delay,
+    target->get_history( t_lastspike - dendritic_delay,
       t_spike - dendritic_delay,
       &start,
       &finish );
@@ -222,8 +308,6 @@ namespace stdpcalcium
     double post_spike;
     double post_previousspike;
     double post_lastspike;
-    double dt_prepost;
-    double dt_postpre;
     double ca_delay;
 
     double t_max_p_duration;
@@ -232,42 +316,38 @@ namespace stdpcalcium
     double t_close_d;
 
     post_lastspike = finish->t_;
-    post_previousspike = t_lastspike_;
+    post_previousspike = t_lastspike;
   
     while ( start != finish )
     {
       post_spike = start->t_;
-      dt_prepost = post_spike + dendritic_delay - t_lastspike_;
       ++start;
       ca_delay = post_spike - post_previousspike;
       post_previousspike = post_spike;
   
-      // Prepost sweep
-      assert(dt_prepost>=0);
-  
-      t_max_p_duration = p_active_ * tau_ca_*std::log(ca_/theta_p_);
+      t_max_p_duration = p_active_ * cp.tau_ca_*std::log(ca_/cp.theta_p_);
       t_close_p = std::min(p_active_ * (post_spike - post_previousspike), t_max_p_duration);
   
-      t_max_d_duration = d_active_ * tau_ca_*std::log(ca_/theta_d_);
+      t_max_d_duration = d_active_ * cp.tau_ca_*std::log(ca_/cp.theta_d_);
       t_close_d = std::min(d_active_ * (post_spike - post_previousspike), t_max_d_duration);
   
-      calcium_update_prepost_( ca_delay );
-      p_active_ = (ca_ >= theta_p_);
-      d_active_ = (ca_ >= theta_d_);
+      calcium_update_prepost_( cp, ca_delay );
+      p_active_ = (ca_ >= cp.theta_p_);
+      d_active_ = (ca_ >= cp.theta_d_);
   
-      update_rho_( t_close_p, t_close_d );
+      update_rho_( cp, t_close_p, t_close_d );
     }
   
-    t_max_p_duration = p_active_ * tau_ca_*std::log(ca_/theta_p_);
+    t_max_p_duration = p_active_ * cp.tau_ca_*std::log(ca_/cp.theta_p_);
     t_close_p = std::min(p_active_ * (t_spike - post_previousspike), t_max_p_duration);
   
-    t_max_d_duration = d_active_ * tau_ca_*std::log(ca_/theta_d_);
+    t_max_d_duration = d_active_ * cp.tau_ca_*std::log(ca_/cp.theta_d_);
     t_close_d = std::min(d_active_ * (t_spike - post_previousspike), t_max_d_duration);
   
-    ca_ = calcium_update_postpre_( t_spike - post_lastspike );
-    p_active_ = (ca_ >= theta_p_);
-    d_active_ = (ca_ >= theta_d_);
-    rho_ = update_rho_( t_close_p, t_close_d );
+    calcium_update_postpre_( cp, t_spike - post_lastspike );
+    p_active_ = (ca_ >= cp.theta_p_);
+    d_active_ = (ca_ >= cp.theta_d_);
+    update_rho_( cp, t_close_p, t_close_d );
   
   
     e.set_receiver( *target );
@@ -277,54 +357,28 @@ namespace stdpcalcium
     e.set_delay( get_delay_steps() );
     e.set_rport( get_rport() );
     e();
-  
-    t_lastspike_ = t_spike;
   }
   
   
   
   template < typename targetidentifierT >
-  STDPCalciumConnector< targetidentifierT >::STDPCalciumConnector()
+  STDPCalciumConnection< targetidentifierT >::STDPCalciumConnection()
     : ConnectionBase()
     , weight_(0.0)
     , rho_(0.0)
     , ca_(0.0)
-    , tau_ca_(80.0)
-    , C_pre_(0.40)
-    , C_post_(0.84)
-    , theta_p_(1.08)
-    , theta_d_(1.00)
-    , gamma_p_(120.0)
-    , gamma_d_(200.0)
-    , tau_rho_(100000.0)
-    , S_attr_(40.0)
-    , sigma_(25.0)
-    , rho_max_(200.0)
-    , t_lastspike_( 0.0 )
     , p_active_( false )
     , d_active_( false )
   {
   }
   
   template < typename targetidentifierT >
-  STDPCalciumConnector< targetidentifierT >::STDPCalciumConnector(
-    const STDPCalciumConnector< targetidentifierT >& rhs )
+  STDPCalciumConnection< targetidentifierT >::STDPCalciumConnection(
+    const STDPCalciumConnection< targetidentifierT >& rhs )
     : ConnectionBase( rhs )
     , weight_( rhs.weight_ )
     , rho_( rhs.rho_ )
     , ca_( rhs.ca_ )
-    , tau_ca_( rhs.tau_ca_ )
-    , C_pre_( rhs.C_pre_ )
-    , C_post_( rhs.C_post_ )
-    , theta_p_( rhs.theta_p_ )
-    , theta_d_( rhs.theta_d_ )
-    , gamma_p_( rhs.gamma_p_ )
-    , gamma_d_( rhs.gamma_d_ )
-    , tau_rho_( rhs.tau_rho_ )
-    , S_attr_( rhs.S_attr_ )
-    , sigma_( rhs.sigma_ )
-    , rho_max_( rhs.rho_max_ )
-    , t_lastspike_( rhs.t_lastspike_ )
     , p_active_( rhs.p_active_ )
     , d_active_( rhs.d_active_ )
   {
@@ -332,59 +386,27 @@ namespace stdpcalcium
   
   template < typename targetidentifierT >
   void
-  STDPCalciumConnector< targetidentifierT >::get_status( DictionaryDatum& d ) const
+  STDPCalciumConnection< targetidentifierT >::get_status( DictionaryDatum& d ) const
   {
     ConnectionBase::get_status( d );
     def< double >( d, names::weight, weight_ );
     def< double >( d, names::rho, rho_ );
     def< double >( d, names::ca, ca_ );
-    def< double >( d, names::tau_ca, tau_ca_ );
-    def< double >( d, names::C_pre, C_pre_ );
-    def< double >( d, names::C_post, C_post_ );
-    def< double >( d, names::theta_p, theta_p_ );
-    def< double >( d, names::theta_d, theta_d_ );
-    def< double >( d, names::gamma_p, gamma_p_ );
-    def< double >( d, names::gamma_d, gamma_d_ );
-    def< double >( d, names::tau_rho, tau_rho_ );
-    def< double >( d, names::S_attr, S_attr_ );
-    def< double >( d, names::sigma, sigma_ );
-    def< double >( d, names::rho_max, rho_max_ );
-    def< double >( d, names::t_lastspike, t_lastspike_ );
     def< bool >( d, names::p_active, p_active_ ); 
     def< bool >( d, names::d_active, d_active_ ); 
-    def< long >( d, names::size_of, sizeof( *this ) );
   }
   
   template < typename targetidentifierT >
   void
-  STDPCalciumConnector< targetidentifierT >::set_status( const DictionaryDatum& d,
-    ConnectorModel& cm )
+  STDPCalciumConnection< targetidentifierT >::set_status( const DictionaryDatum& d,
+    nest::ConnectorModel& cm )
   {
     ConnectionBase::set_status( d, cm );
     updateValue< double >( d, names::weight, weight_ );
     updateValue< double >( d, names::rho, rho_ );
     updateValue< double >( d, names::ca, ca_ );
-    updateValue< double >( d, names::tau_ca, tau_ca_ );
-    updateValue< double >( d, names::C_pre, C_pre_ );
-    updateValue< double >( d, names::C_post, C_post_ );
-    updateValue< double >( d, names::theta_p, theta_p_ );
-    updateValue< double >( d, names::theta_d, theta_d_ );
-    updateValue< double >( d, names::gamma_p, gamma_p_ );
-    updateValue< double >( d, names::gamma_d, gamma_d_ );
-    updateValue< double >( d, names::tau_rho, tau_rho_ );
-    updateValue< double >( d, names::S_attr, S_attr_ );
-    updateValue< double >( d, names::sigma, sigma_ );
-    updateValue< double >( d, names::rho_max, rho_max_ );
-    updateValue< double >( d, names::t_lastspike, t_lastspike_ );
     updateValue< bool >( d, names::p_active, p_active_ ); 
     updateValue< bool >( d, names::d_active, d_active_ ); 
-  
-    // check if weight_ and Wmax_ has the same sign
-    if ( not( ( ( rho_ >= 0 ) - ( rho_ < 0 ) )
-           == ( ( rho_max_ >= 0 ) - ( rho_max_ < 0 ) ) ) )
-    {
-      throw BadProperty( "rho and rho_max must have same sign." );
-    }
   }
 
 } // namespace nest

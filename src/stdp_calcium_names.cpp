@@ -41,7 +41,6 @@ namespace stdpcalcium
     	const Name S_attr( "S_attr" );
     	const Name sigma( "sigma" );
     	const Name rho_max( "rho_max" );
-    	const Name t_lastspike( "t_lastspike" );
     	const Name p_active( "p_active" );
     	const Name d_active( "d_active" );
 	}

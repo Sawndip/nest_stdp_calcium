@@ -107,12 +107,12 @@ stdpcalcium::STDPCalciumModule::init( SLIInterpreter* i )
 {
 
   nest::kernel()
-    .model_manager.register_connection_model< STDPCalciumConnectionHom< nest::TargetIdentifierPtrRport > >(
-      "stdp_calcium_synapse_hom" );
+    .model_manager.register_connection_model< STDPCalciumConnection< nest::TargetIdentifierPtrRport > >(
+      "stdp_calcium_synapse" );
 
   nest::kernel()
-    .model_manager.register_connection_model< STDPCalciumConnectionHom< nest::TargetIdentifierIndex > >(
-      "stdp_calcium_synapse_hom_hpc" );
+    .model_manager.register_connection_model< STDPCalciumConnection< nest::TargetIdentifierIndex > >(
+      "stdp_calcium_synapse_hpc" );
 
 
 } // STDPCalciumModule::init()
